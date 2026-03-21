@@ -4,6 +4,7 @@
 import logging
 import os
 import random
+import re
 import signal
 import sys
 import time
@@ -24,11 +25,11 @@ from instagrapi.exceptions import (
 # --- Constants ---
 SESSION_FILE = Path(__file__).parent / "session.json"
 SYSTEM_PROMPT_FILE = Path(__file__).parent / "system_prompt.txt"
-POLL_MIN = 30
-POLL_MAX = 45
+POLL_MIN = 10
+POLL_MAX = 15
 CONTEXT_MESSAGES = 20
-REPLY_DELAY_MIN = 3
-REPLY_DELAY_MAX = 8
+REPLY_DELAY_MIN = 1
+REPLY_DELAY_MAX = 3
 RATE_LIMIT_BACKOFF = 300
 MAX_LOGIN_RETRIES = 3
 REPLY_COOLDOWN = 15  # seconds between replies
@@ -129,11 +130,13 @@ def fetch_messages(ig_client, thread_id):
     return messages
 
 
-def find_new_mentions(messages, last_timestamp, bot_name):
+def find_new_mentions(messages, last_timestamp, bot_name, replied_timestamps):
     """Find new messages that @mention the bot, filtering to text-only."""
     mentions = []
     for msg in messages:
         if last_timestamp is not None and msg.timestamp <= last_timestamp:
+            continue
+        if msg.timestamp in replied_timestamps:
             continue
         if not msg.text:
             continue
@@ -170,7 +173,10 @@ def generate_response(groq_client, context, system_prompt):
             max_tokens=256,
         )
         reply = response.choices[0].message.content
-        return reply.strip() if reply else None
+        if reply:
+            reply = reply.strip()
+            reply = re.sub(r'^(\[.*?\]|[\w]+):\s*', '', reply)
+        return reply if reply else None
     except Exception as e:
         log.error(f"Groq API error: {e}")
         return None
@@ -224,10 +230,21 @@ def main():
     ig_client = login_instagram(username, password)
 
     username_cache = {}
+    replied_timestamps = set()
     last_timestamp = None
     last_reply_time = 0.0
     login_retries = 0
     first_run = True
+
+    # Pre-cache all participant usernames from thread info
+    try:
+        thread = ig_client.direct_thread(thread_id)
+        for user in thread.users:
+            username_cache[str(user.pk)] = user.username
+        username_cache[str(ig_client.user_id)] = username
+        log.info(f"Cached {len(username_cache)} participant username(s) from thread info")
+    except Exception as e:
+        log.warning(f"Failed to pre-cache usernames from thread info: {e}")
 
     print()
     print("=" * 50)
@@ -252,7 +269,7 @@ def main():
                     log.info("First run — no messages found in thread")
                 first_run = False
             else:
-                mentions = find_new_mentions(messages, last_timestamp, bot_name)
+                mentions = find_new_mentions(messages, last_timestamp, bot_name, replied_timestamps)
                 new_latest = get_latest_timestamp(messages)
                 if new_latest and (last_timestamp is None or new_latest > last_timestamp):
                     last_timestamp = new_latest
@@ -273,6 +290,7 @@ def main():
                         if reply:
                             send_reply(ig_client, thread_id, reply)
                             last_reply_time = time.time()
+                            replied_timestamps.add(trigger.timestamp)
                         else:
                             log.warning("LLM returned empty response, skipping reply")
 
