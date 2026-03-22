@@ -721,9 +721,12 @@ def main():
                             else:
                                 send_reply(ig_client, thread_id, reply)
                             last_reply_time = time.time()
-                            replied_timestamps.add(trigger.timestamp)
+                            for m in mentions:
+                                replied_timestamps.add(m.timestamp)
                         else:
                             log.warning("LLM returned empty response, skipping reply")
+                            for m in mentions:
+                                replied_timestamps.add(m.timestamp)
 
                 # Reel reactions (independent of text replies)
                 if REACT_TO_REELS and gemini_client and reel_triggers:
@@ -734,7 +737,8 @@ def main():
                     _, media_pk = extract_reel_media(reel_msg)
                     if media_pk is None:
                         log.warning(f"Could not extract media_pk from reel — skipping")
-                        replied_timestamps.add(reel_msg.timestamp)
+                        for m in reel_triggers:
+                            replied_timestamps.add(m.timestamp)
                     else:
                         context = format_context(messages, ig_client, username_cache)
                         reel_reply = process_reel(
@@ -756,7 +760,8 @@ def main():
                             log.warning("No reaction generated for reel, skipping")
 
                         # Always mark as processed to avoid re-processing
-                        replied_timestamps.add(reel_msg.timestamp)
+                        for m in reel_triggers:
+                            replied_timestamps.add(m.timestamp)
 
             # Wait before next poll
             poll_interval = random.uniform(POLL_MIN, POLL_MAX)
