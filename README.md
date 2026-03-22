@@ -5,6 +5,9 @@ A Python bot that sits in an Instagram group chat and responds when @mentioned. 
 ## Prerequisites
 
 - Python 3.10+
+- **ffmpeg** with libopus support (required for voice note replies)
+  - Ubuntu/Debian: `sudo apt install ffmpeg`
+  - macOS: `brew install ffmpeg`
 - An Instagram account for the bot (use a separate account, not your main one)
 - A free Groq API key from [console.groq.com](https://console.groq.com)
 

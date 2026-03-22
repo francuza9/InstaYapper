@@ -6,6 +6,7 @@ import os
 import random
 import re
 import signal
+import subprocess
 import sys
 import time
 from datetime import datetime, timezone
@@ -13,6 +14,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from groq import Groq
+from gtts import gTTS
 from instagrapi import Client
 from instagrapi.exceptions import (
     ChallengeRequired,
@@ -33,6 +35,8 @@ REPLY_DELAY_MAX = 3
 RATE_LIMIT_BACKOFF = 300
 MAX_LOGIN_RETRIES = 3
 REPLY_COOLDOWN = 15  # seconds between replies
+VOICE_CHANCE = 1.0 # X% chance to reply with voice message instead of text
+TTS_LANGUAGE = os.getenv("TTS_LANGUAGE", "en")
 
 # --- Logging ---
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
@@ -190,7 +194,35 @@ def send_reply(ig_client, thread_id, text):
     log.info(f"Waiting {delay:.1f}s before replying...")
     time.sleep(delay)
     ig_client.direct_send(text, thread_ids=[thread_id])
-    log.info(f"Sent reply: {text[:80]}{'...' if len(text) > 80 else ''}")
+    log.info(f"Sent text reply: {text[:80]}{'...' if len(text) > 80 else ''}")
+
+
+def send_voice_reply(ig_client, thread_id, text):
+    mp3_path = "/tmp/reply.mp3"
+    ogg_path = "/tmp/reply.ogg"
+    try:
+        delay = random.uniform(REPLY_DELAY_MIN, REPLY_DELAY_MAX)
+        log.info(f"Waiting {delay:.1f}s before replying (voice)...")
+        time.sleep(delay)
+
+        tts = gTTS(text, lang=TTS_LANGUAGE)
+        tts.save(mp3_path)
+
+        result = subprocess.run(
+            ["ffmpeg", "-i", mp3_path, "-c:a", "libopus", ogg_path, "-y"],
+            capture_output=True,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"ffmpeg failed: {result.stderr.decode()}")
+
+        ig_client.direct_send_voice(path=ogg_path, thread_ids=[thread_id])
+        log.info(f"Sent voice reply: {text[:80]}{'...' if len(text) > 80 else ''}")
+    finally:
+        for path in (mp3_path, ogg_path):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
 
 
 def main():
@@ -298,7 +330,14 @@ def main():
                         reply = generate_response(groq_client, context, system_prompt)
 
                         if reply:
-                            send_reply(ig_client, thread_id, reply)
+                            if random.random() < VOICE_CHANCE:
+                                try:
+                                    send_voice_reply(ig_client, thread_id, reply)
+                                except Exception as e:
+                                    log.warning(f"Voice reply failed, falling back to text: {e}")
+                                    send_reply(ig_client, thread_id, reply)
+                            else:
+                                send_reply(ig_client, thread_id, reply)
                             last_reply_time = time.time()
                             replied_timestamps.add(trigger.timestamp)
                         else:
