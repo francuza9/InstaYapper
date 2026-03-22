@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Instagram group chat bot that responds to @mentions using Groq (Llama 3.3 70B)."""
 
+import json
 import logging
 import os
 import random
@@ -11,6 +12,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from uuid import uuid4
 
 from dotenv import load_dotenv
 from groq import Groq
@@ -197,9 +199,88 @@ def send_reply(ig_client, thread_id, text):
     log.info(f"Sent text reply: {text[:80]}{'...' if len(text) > 80 else ''}")
 
 
+def direct_send_voice(cl, path, thread_id):
+    """Send a voice note to a DM thread using instagrapi's low-level API."""
+    path = Path(path)
+    upload_id = str(int(time.time() * 1000))
+    upload_name = f"{upload_id}_0_{random.randint(1000000000, 9999999999)}"
+
+    # Get audio duration via ffprobe
+    probe = subprocess.run(
+        ["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
+         "-of", "csv=p=0", str(path)],
+        capture_output=True, text=True,
+    )
+    duration_ms = int(float(probe.stdout.strip()) * 1000)
+
+    # Upload via rupload_igvideo (Instagram uses video endpoint for voice)
+    rupload_params = {
+        "retry_context": '{"num_step_auto_retry":0,"num_reupload":0,"num_step_manual_retry":0}',
+        "media_type": "11",
+        "upload_id": upload_id,
+        "upload_media_duration_ms": str(duration_ms),
+        "is_direct_voice": "1",
+        "direct_v2": "1",
+        "xsharing_user_ids": json.dumps([cl.user_id]),
+    }
+
+    with open(path, "rb") as f:
+        audio_data = f.read()
+    audio_len = str(len(audio_data))
+
+    headers = {
+        "Accept-Encoding": "gzip, deflate",
+        "X-Instagram-Rupload-Params": json.dumps(rupload_params),
+        "X_FB_VIDEO_WATERFALL_ID": str(uuid4()),
+    }
+
+    # Register upload
+    cl.private.get(
+        f"https://i.instagram.com/rupload_igvideo/{upload_name}",
+        headers=headers,
+    )
+
+    # POST the audio data
+    upload_headers = {
+        "Offset": "0",
+        "X-Entity-Name": upload_name,
+        "X-Entity-Length": audio_len,
+        "Content-Type": "application/octet-stream",
+        "Content-Length": audio_len,
+        "X-Entity-Type": "audio/mp4",
+        **headers,
+    }
+    cl.private.post(
+        f"https://i.instagram.com/rupload_igvideo/{upload_name}",
+        data=audio_data,
+        headers=upload_headers,
+    )
+
+    # Broadcast as voice note
+    token = cl.generate_mutation_token()
+    data = cl.with_default_data({
+        "action": "send_item",
+        "is_shh_mode": "0",
+        "send_attribution": "direct_thread",
+        "client_context": token,
+        "mutation_token": token,
+        "offline_threading_id": token,
+        "thread_ids": json.dumps([int(thread_id)]),
+        "upload_id": upload_id,
+        "waveform": json.dumps([0.5] * 20),
+        "waveform_sampling_frequency_hz": "10",
+    })
+
+    cl.private_request(
+        "direct_v2/threads/broadcast/share_voice/",
+        data=data,
+        with_signature=False,
+    )
+
+
 def send_voice_reply(ig_client, thread_id, text):
     mp3_path = "/tmp/reply.mp3"
-    ogg_path = "/tmp/reply.ogg"
+    m4a_path = "/tmp/reply.m4a"
     try:
         delay = random.uniform(REPLY_DELAY_MIN, REPLY_DELAY_MAX)
         log.info(f"Waiting {delay:.1f}s before replying (voice)...")
@@ -209,16 +290,16 @@ def send_voice_reply(ig_client, thread_id, text):
         tts.save(mp3_path)
 
         result = subprocess.run(
-            ["ffmpeg", "-i", mp3_path, "-c:a", "libopus", ogg_path, "-y"],
+            ["ffmpeg", "-i", mp3_path, "-c:a", "aac", "-b:a", "64k", m4a_path, "-y"],
             capture_output=True,
         )
         if result.returncode != 0:
             raise RuntimeError(f"ffmpeg failed: {result.stderr.decode()}")
 
-        ig_client.direct_send_voice(path=ogg_path, thread_ids=[thread_id])
+        direct_send_voice(ig_client, m4a_path, thread_id)
         log.info(f"Sent voice reply: {text[:80]}{'...' if len(text) > 80 else ''}")
     finally:
-        for path in (mp3_path, ogg_path):
+        for path in (mp3_path, m4a_path):
             try:
                 os.remove(path)
             except OSError:
