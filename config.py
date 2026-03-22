@@ -5,7 +5,7 @@
 REPLY_ONLY_WHEN_MENTIONED = False
 
 # Chance of replying with a voice message instead of text (0.0 to 1.0)
-VOICE_CHANCE = 1.0
+VOICE_CHANCE = 0.25
 
 # Language code for text-to-speech (e.g. "en", "sr", "de")
 TTS_LANGUAGE = "en"
