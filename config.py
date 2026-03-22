@@ -15,7 +15,7 @@ POLL_MIN = 10
 POLL_MAX = 15
 
 # How many recent messages to send as context to the LLM
-CONTEXT_MESSAGES = 20
+CONTEXT_MESSAGES = 5
 
 # Delay before sending a reply in seconds (randomized, looks more human)
 REPLY_DELAY_MIN = 1
