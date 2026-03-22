@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Instagram group chat bot that responds to @mentions using Groq (Llama 3.3 70B)."""
+"""Instagram DM bot powered by Groq (Llama 3.3 70B)."""
 
 import json
 import logging
@@ -27,19 +27,24 @@ from instagrapi.exceptions import (
     PleaseWaitFewMinutes,
 )
 
+from config import (
+    CONTEXT_MESSAGES,
+    POLL_MAX,
+    POLL_MIN,
+    REPLY_COOLDOWN,
+    REPLY_DELAY_MAX,
+    REPLY_DELAY_MIN,
+    REPLY_ONLY_WHEN_MENTIONED,
+    TTS_LANGUAGE,
+    VOICE_CHANCE as _VOICE_CHANCE_DEFAULT,
+)
+
 # --- Constants ---
 SESSION_FILE = Path(__file__).parent / "session.json"
 SYSTEM_PROMPT_FILE = Path(__file__).parent / "system_prompt.txt"
-POLL_MIN = 10
-POLL_MAX = 15
-CONTEXT_MESSAGES = 20
-REPLY_DELAY_MIN = 1
-REPLY_DELAY_MAX = 3
 RATE_LIMIT_BACKOFF = 300
 MAX_LOGIN_RETRIES = 3
-REPLY_COOLDOWN = 15  # seconds between replies
-VOICE_CHANCE = 1.0 # X% chance to reply with voice message instead of text
-TTS_LANGUAGE = os.getenv("TTS_LANGUAGE", "en")
+VOICE_CHANCE = _VOICE_CHANCE_DEFAULT
 
 # --- Logging ---
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
@@ -140,7 +145,7 @@ def fetch_messages(ig_client, thread_id):
     return messages
 
 
-def find_new_messages(messages, last_timestamp, replied_timestamps, bot_user_id):
+def find_new_messages(messages, last_timestamp, replied_timestamps, bot_user_id, bot_display_name=None):
     """Find new text messages, filtering out non-text, already-replied, and own messages."""
     new_msgs = []
     for msg in messages:
@@ -153,6 +158,9 @@ def find_new_messages(messages, last_timestamp, replied_timestamps, bot_user_id)
             continue
         if not msg.text:
             continue
+        if REPLY_ONLY_WHEN_MENTIONED and bot_display_name:
+            if f"@{bot_display_name}".lower() not in msg.text.lower():
+                continue
         new_msgs.append(msg)
     return new_msgs
 
@@ -537,7 +545,7 @@ def main():
                 log.debug(f"Initial last_timestamp set to {last_timestamp}")
                 first_run = False
             else:
-                mentions = find_new_messages(messages, last_timestamp, replied_timestamps, bot_user_id)
+                mentions = find_new_messages(messages, last_timestamp, replied_timestamps, bot_user_id, bot_name)
                 new_latest = get_latest_timestamp(messages)
                 if new_latest and (last_timestamp is None or new_latest > last_timestamp):
                     last_timestamp = new_latest

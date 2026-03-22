@@ -1,6 +1,6 @@
-# Instagram Group Chat Bot
+# InstaYapper
 
-A Python bot that sits in an Instagram group chat and responds when @mentioned. Uses Groq's free API with Llama 3.3 70B for generating replies. Built for private friend group chats — not a production service.
+A Python bot that monitors an Instagram DM thread — including group chats — and responds when @mentioned. Uses Groq's free API with Llama 3.3 70B for generating replies. Built for private conversations — not a production service.
 
 ## Prerequisites
 
@@ -32,7 +32,7 @@ A Python bot that sits in an Instagram group chat and responds when @mentioned. 
    - `INSTAGRAM_USERNAME` — the bot's Instagram username
    - `INSTAGRAM_PASSWORD` — the bot's Instagram password
    - `GROQ_API_KEY` — your API key from [console.groq.com](https://console.groq.com)
-   - `GROUP_THREAD_ID` — the thread ID of your group chat (see below)
+   - `GROUP_THREAD_ID` — the thread ID of the DM conversation (see below)
    - `BOT_DISPLAY_NAME` — the bot's Instagram handle without the `@`
 
 3. **Find your group thread ID:**
@@ -41,7 +41,7 @@ A Python bot that sits in an Instagram group chat and responds when @mentioned. 
    python find_thread.py
    ```
 
-   This will list your recent DM threads with their IDs. Copy the thread ID of your group chat and paste it into `GROUP_THREAD_ID` in your `.env` file.
+   This will list your recent DM threads with their IDs. Copy the thread ID of the conversation you want the bot in and paste it into `GROUP_THREAD_ID` in your `.env` file.
 
 4. **Run the bot:**
 
@@ -49,7 +49,7 @@ A Python bot that sits in an Instagram group chat and responds when @mentioned. 
    python bot.py
    ```
 
-   The bot will start polling the group chat every 30-45 seconds. Press `Ctrl+C` to stop.
+   The bot will start polling the DM thread every 30-45 seconds. Press `Ctrl+C` to stop.
 
 ## Customizing the Personality
 
@@ -81,13 +81,29 @@ Voice replies require web cookies from an authenticated Instagram browser sessio
 
 5. **Note:** These cookies expire periodically. If voice messages stop working, repeat the steps above to refresh them.
 
+> **Important:** Do NOT log out of the bot account in your browser after copying cookies. Logging out invalidates the session and voice messages will stop working. If you do log out, or if cookies expire naturally, you'll need to log back in and copy all the cookies again into `.env`. The bot will automatically detect expired cookies and fall back to text-only mode until you refresh them.
+
+## Configuration
+
+Edit `config.py` to tweak bot behavior without touching credentials or code:
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `REPLY_ONLY_WHEN_MENTIONED` | `False` | `True` = only reply when @mentioned, `False` = reply to every message |
+| `VOICE_CHANCE` | `1.0` | Chance of replying with a voice message (0.0–1.0) |
+| `TTS_LANGUAGE` | `"en"` | Language code for text-to-speech |
+| `POLL_MIN` / `POLL_MAX` | `10` / `15` | Polling interval range in seconds |
+| `REPLY_DELAY_MIN` / `REPLY_DELAY_MAX` | `1` / `3` | Delay before sending a reply (looks more human) |
+| `REPLY_COOLDOWN` | `15` | Minimum seconds between replies |
+| `CONTEXT_MESSAGES` | `20` | How many recent messages to send as context to the LLM |
+
 ## How It Works
 
-- Polls the group chat every 30-45 seconds (randomized)
-- Detects @mentions of the bot (case-insensitive)
-- Sends the last 20 messages as conversation context to Llama 3.3 70B via Groq
-- Replies with a short delay (3-8 seconds) to look more human
-- Has a 15-second cooldown between replies to avoid spamming
+- Polls the DM thread every 10-15 seconds (randomized)
+- By default, replies to every new message. Set `REPLY_ONLY_WHEN_MENTIONED = True` in `config.py` to only reply when @mentioned.
+- Sends recent messages as conversation context to Llama 3.3 70B via Groq
+- Replies with a short delay to look more human
+- Has a cooldown between replies to avoid spamming
 - Saves the Instagram session to `session.json` to avoid re-logging in each time
 
 ## Troubleshooting

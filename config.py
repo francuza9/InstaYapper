@@ -1,0 +1,25 @@
+# Bot behavior settings — edit these to customize how the bot operates.
+# Credentials and secrets stay in .env; this file is only for tunable behavior.
+
+# Reply to every message (False) or only when @mentioned (True)
+REPLY_ONLY_WHEN_MENTIONED = False
+
+# Chance of replying with a voice message instead of text (0.0 to 1.0)
+VOICE_CHANCE = 1.0
+
+# Language code for text-to-speech (e.g. "en", "sr", "de")
+TTS_LANGUAGE = "en"
+
+# Polling interval range in seconds (randomized between min and max)
+POLL_MIN = 10
+POLL_MAX = 15
+
+# How many recent messages to send as context to the LLM
+CONTEXT_MESSAGES = 20
+
+# Delay before sending a reply in seconds (randomized, looks more human)
+REPLY_DELAY_MIN = 1
+REPLY_DELAY_MAX = 3
+
+# Minimum seconds between replies to avoid spamming
+REPLY_COOLDOWN = 15
