@@ -1,6 +1,6 @@
 # InstaYapper
 
-A Python bot that monitors an Instagram DM thread — including group chats — and responds when @mentioned. Uses Groq's free API with Llama 3.3 70B for generating replies. Built for private conversations — not a production service.
+A Python bot that monitors an Instagram DM thread — including group chats — and responds when @mentioned. Uses Groq's free API with Llama 3.3 70B for generating text replies, and optionally Google Gemini 2.5 Flash to watch and react to shared reels. Built for private conversations — not a production service.
 
 ## Prerequisites
 
@@ -32,7 +32,7 @@ A Python bot that monitors an Instagram DM thread — including group chats — 
    - `INSTAGRAM_USERNAME` — the bot's Instagram username
    - `INSTAGRAM_PASSWORD` — the bot's Instagram password
    - `GROQ_API_KEY` — your API key from [console.groq.com](https://console.groq.com)
-   - `GROUP_THREAD_ID` — the thread ID of the DM conversation (see below)
+   - `CHAT_THREAD_ID` — the thread ID of the DM conversation (see below)
    - `BOT_DISPLAY_NAME` — the bot's Instagram handle without the `@`
 
 3. **Find your group thread ID:**
@@ -41,7 +41,7 @@ A Python bot that monitors an Instagram DM thread — including group chats — 
    python find_thread.py
    ```
 
-   This will list your recent DM threads with their IDs. Copy the thread ID of the conversation you want the bot in and paste it into `GROUP_THREAD_ID` in your `.env` file.
+   This will list your recent DM threads with their IDs. Copy the thread ID of the conversation you want the bot in and paste it into `CHAT_THREAD_ID` in your `.env` file.
 
 4. **Run the bot:**
 
@@ -96,6 +96,26 @@ Edit `config.py` to tweak bot behavior without touching credentials or code:
 | `REPLY_DELAY_MIN` / `REPLY_DELAY_MAX` | `1` / `3` | Delay before sending a reply (looks more human) |
 | `REPLY_COOLDOWN` | `15` | Minimum seconds between replies |
 | `CONTEXT_MESSAGES` | `20` | How many recent messages to send as context to the LLM |
+| `REACT_TO_REELS` | `False` | Enable reel reactions (requires `GEMINI_API_KEY`) |
+
+## Reel Reactions Setup
+
+The bot can "watch" reels shared in the DM thread and reply with a short, in-character reaction. This uses Google Gemini 2.5 Flash as a vision model — it's free with no credit card required.
+
+1. **Get a free Gemini API key** at [aistudio.google.com/apikey](https://aistudio.google.com/apikey)
+
+2. **Add to your `.env`:**
+
+   ```
+   REACT_TO_REELS=true
+   GEMINI_API_KEY=your_gemini_api_key
+   ```
+
+3. **That's it.** The bot will now download reels shared in the thread, send them to Gemini for analysis, and reply directly to the reel message with a reaction.
+
+**Free tier limits:** 10 requests/minute, 250 requests/day, 250K tokens/minute. The bot gracefully skips reels if rate limited — no crashes, no retries.
+
+**How it works:** When someone shares a reel, the bot downloads the video, uploads it to Gemini's File API, and asks Gemini to react using the same personality from `system_prompt.txt`. The reply is threaded directly to the reel message. Reel reactions are always text — voice notes only apply to regular text replies.
 
 ## How It Works
 
@@ -105,6 +125,7 @@ Edit `config.py` to tweak bot behavior without touching credentials or code:
 - Replies with a short delay to look more human
 - Has a cooldown between replies to avoid spamming
 - Saves the Instagram session to `session.json` to avoid re-logging in each time
+- Optionally reacts to shared reels using Gemini 2.5 Flash for video understanding
 
 ## Troubleshooting
 
@@ -119,7 +140,7 @@ Delete `session.json` and restart the bot to force a fresh login.
 
 **Bot not responding**
 - Make sure `BOT_DISPLAY_NAME` matches the bot's Instagram username exactly (without `@`)
-- Check that `GROUP_THREAD_ID` is correct (run `find_thread.py` again)
+- Check that `CHAT_THREAD_ID` is correct (run `find_thread.py` again)
 - Check the console logs for errors
 
 **Groq API errors**

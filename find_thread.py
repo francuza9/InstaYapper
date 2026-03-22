@@ -64,7 +64,7 @@ def main():
         print()
 
     print(f"{'=' * 50}")
-    print("Copy the Thread ID of your group chat and paste it into GROUP_THREAD_ID in your .env file.")
+    print("Copy the Thread ID of your group chat and paste it into CHAT_THREAD_ID in your .env file.")
 
 
 if __name__ == "__main__":

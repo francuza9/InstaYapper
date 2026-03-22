@@ -23,3 +23,6 @@ REPLY_DELAY_MAX = 3
 
 # Minimum seconds between replies to avoid spamming
 REPLY_COOLDOWN = 15
+
+# React to reels shared in the DM thread (requires GEMINI_API_KEY)
+REACT_TO_REELS = True

@@ -12,7 +12,7 @@ from gtts import gTTS
 
 load_dotenv()
 
-THREAD_ID = os.getenv("GROUP_THREAD_ID")
+THREAD_ID = os.getenv("CHAT_THREAD_ID")
 
 UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "

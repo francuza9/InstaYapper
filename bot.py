@@ -31,6 +31,7 @@ from config import (
     CONTEXT_MESSAGES,
     POLL_MAX,
     POLL_MIN,
+    REACT_TO_REELS as _REACT_TO_REELS_DEFAULT,
     REPLY_COOLDOWN,
     REPLY_DELAY_MAX,
     REPLY_DELAY_MIN,
@@ -138,6 +139,29 @@ def get_username(ig_client, user_id, cache):
         return fallback
 
 
+def extract_reel_media(msg):
+    """Extract reel media info from a DM message. Returns (Media_or_None, media_pk) or (None, None)."""
+    if msg.clip is not None:
+        return msg.clip, int(msg.clip.pk)
+    if msg.media_share is not None and getattr(msg.media_share, 'product_type', '') == 'clips':
+        return msg.media_share, int(msg.media_share.pk)
+    if msg.felix_share and isinstance(msg.felix_share, dict):
+        video = msg.felix_share.get("video", {})
+        pk = video.get("pk")
+        if pk:
+            return None, int(pk)
+    if msg.item_type == "xma_clip" and msg.xma_share:
+        from urllib.parse import urlparse, parse_qs
+        video_url = getattr(msg.xma_share, 'video_url', None)
+        if video_url:
+            id_param = parse_qs(urlparse(str(video_url)).query).get('id', [None])[0]
+            if id_param:
+                media_pk = int(id_param.split('_')[0])
+                return None, media_pk
+        return None, None
+    return None, None
+
+
 def fetch_messages(ig_client, thread_id):
     messages = ig_client.direct_messages(thread_id, amount=CONTEXT_MESSAGES)
     # direct_messages returns newest first, reverse for chronological order
@@ -165,6 +189,24 @@ def find_new_messages(messages, last_timestamp, replied_timestamps, bot_user_id,
     return new_msgs
 
 
+def find_new_reels(messages, last_timestamp, replied_timestamps, bot_user_id):
+    """Find new reel messages that haven't been reacted to yet."""
+    log.info(f"[DEBUG] find_new_reels called with {len(messages)} messages, last_timestamp={last_timestamp}")
+    new_reels = []
+    for msg in messages:
+        if int(msg.user_id) == int(bot_user_id):
+            continue
+        if last_timestamp is not None and msg.timestamp <= last_timestamp:
+            continue
+        if msg.timestamp in replied_timestamps:
+            continue
+        _, media_pk = extract_reel_media(msg)
+        if media_pk is not None:
+            log.debug(f"Found reel message: item_type={msg.item_type}, media_pk={media_pk}")
+            new_reels.append(msg)
+    return new_reels
+
+
 def get_latest_timestamp(messages):
     if not messages:
         return None
@@ -174,10 +216,17 @@ def get_latest_timestamp(messages):
 def format_context(messages, ig_client, username_cache):
     lines = []
     for msg in messages:
-        if not msg.text:
-            continue
         username = get_username(ig_client, msg.user_id, username_cache)
-        lines.append(f"[{username}]: {msg.text}")
+        if msg.text:
+            lines.append(f"[{username}]: {msg.text}")
+        else:
+            media, media_pk = extract_reel_media(msg)
+            if media_pk is not None:
+                caption = getattr(media, 'caption_text', '') if media else ''
+                if caption:
+                    lines.append(f"[{username}] sent a reel: \"{caption[:200]}\"")
+                else:
+                    lines.append(f"[{username}] sent a reel")
     return "\n".join(lines)
 
 
@@ -451,6 +500,80 @@ def send_voice_reply(thread_id, text):
                 pass
 
 
+def process_reel(ig_client, gemini_client, reel_msg, media_pk, context, system_prompt, username_cache):
+    """Download a reel, send to Gemini for vision analysis, return reaction text."""
+    from google.genai import types
+
+    video_path = None
+    gemini_file = None
+    try:
+        # Download video
+        folder = Path("/tmp")
+        video_path = ig_client.clip_download(media_pk, folder=folder)
+        log.info(f"Downloaded reel {media_pk} to {video_path}")
+
+        # Upload to Gemini File API
+        gemini_file = gemini_client.files.upload(file=str(video_path), config={"mime_type": "video/mp4"})
+        log.info("Uploaded reel to Gemini, waiting for processing...")
+
+        # Wait for Gemini to process the video (max 60s)
+        deadline = time.time() + 60
+        while gemini_file.state.name == "PROCESSING":
+            if time.time() > deadline:
+                log.warning(f"Gemini processing timed out for reel {media_pk}")
+                return None
+            time.sleep(2)
+            gemini_file = gemini_client.files.get(name=gemini_file.name)
+
+        if gemini_file.state.name == "FAILED":
+            log.error(f"Gemini video processing failed for reel {media_pk}")
+            return None
+
+        sender = get_username(ig_client, reel_msg.user_id, username_cache)
+
+        reel_prompt = (
+            f"{system_prompt}\n\n"
+            f"Recent chat context:\n{context}\n\n"
+            f"@{sender} just sent this reel in the chat. "
+            f"Watch it and react naturally like you would in a group chat. "
+            f"Keep it short (1-2 sentences max). Be funny, sarcastic, or savage as appropriate. "
+            f"Don't describe the video — just react to it."
+        )
+
+        response = gemini_client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=[gemini_file, reel_prompt],
+            config=types.GenerateContentConfig(
+                temperature=0.9,
+                max_output_tokens=256,
+            ),
+        )
+        reply = response.text.strip() if response.text else None
+        if reply:
+            reply = re.sub(r'^(\[.*?\]|[\w]+):\s*', '', reply)
+        log.info(f"Gemini reaction: {reply[:80] if reply else '<empty>'}")
+        return reply
+
+    except Exception as e:
+        error_str = str(e)
+        if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str:
+            log.warning(f"Gemini rate limited, skipping reel {media_pk}")
+        else:
+            log.error(f"Error processing reel {media_pk}: {e}", exc_info=True)
+        return None
+    finally:
+        if video_path:
+            try:
+                os.remove(str(video_path))
+            except OSError:
+                pass
+        if gemini_file:
+            try:
+                gemini_client.files.delete(name=gemini_file.name)
+            except Exception:
+                pass
+
+
 def main():
     load_dotenv()
 
@@ -458,7 +581,7 @@ def main():
     username = os.getenv("INSTAGRAM_USERNAME")
     password = os.getenv("INSTAGRAM_PASSWORD")
     groq_api_key = os.getenv("GROQ_API_KEY")
-    thread_id_str = os.getenv("GROUP_THREAD_ID")
+    thread_id_str = os.getenv("CHAT_THREAD_ID")
     bot_name = os.getenv("BOT_DISPLAY_NAME")
 
     missing = []
@@ -469,7 +592,7 @@ def main():
     if not groq_api_key:
         missing.append("GROQ_API_KEY")
     if not thread_id_str:
-        missing.append("GROUP_THREAD_ID")
+        missing.append("CHAT_THREAD_ID")
     if not bot_name:
         missing.append("BOT_DISPLAY_NAME")
 
@@ -517,6 +640,25 @@ def main():
         log.warning(f"Web session setup failed: {e} — voice messages disabled.")
         VOICE_CHANCE = 0
 
+    # Reel reaction setup
+    REACT_TO_REELS = _REACT_TO_REELS_DEFAULT
+    log.info(f"[DEBUG] REACT_TO_REELS = {REACT_TO_REELS}")
+    gemini_client = None
+    if REACT_TO_REELS:
+        gemini_api_key = os.getenv("GEMINI_API_KEY")
+        if not gemini_api_key:
+            log.warning("REACT_TO_REELS enabled but GEMINI_API_KEY not set — reel reactions disabled.")
+            REACT_TO_REELS = False
+        else:
+            try:
+                from google import genai
+                gemini_client = genai.Client(api_key=gemini_api_key)
+                log.info(f"[DEBUG] Gemini client created: {gemini_client}")
+                log.info("Gemini configured — reel reactions enabled.")
+            except Exception as e:
+                log.warning(f"Gemini setup failed: {e} — reel reactions disabled.")
+                REACT_TO_REELS = False
+
     bot_user_id = int(ig_client.user_id)
     log.info(f"Bot user_id: {bot_user_id} (type: {type(bot_user_id).__name__})")
 
@@ -528,6 +670,7 @@ def main():
     print(f"  Thread:   {thread_id}")
     print(f"  Bot name: @{bot_name}")
     print(f"  Model:    llama-3.3-70b-versatile (Groq)")
+    print(f"  Reels:    {'Gemini 2.5 Flash' if REACT_TO_REELS else 'disabled'}")
     print("=" * 50)
     print()
 
@@ -535,6 +678,7 @@ def main():
         try:
             messages = fetch_messages(ig_client, thread_id)
             login_retries = 0  # reset on success
+
 
             if first_run:
                 last_timestamp = get_latest_timestamp(messages)
@@ -546,11 +690,13 @@ def main():
                 first_run = False
             else:
                 mentions = find_new_messages(messages, last_timestamp, replied_timestamps, bot_user_id, bot_name)
+                reel_triggers = find_new_reels(messages, last_timestamp, replied_timestamps, bot_user_id) if REACT_TO_REELS else []
+
                 new_latest = get_latest_timestamp(messages)
                 if new_latest and (last_timestamp is None or new_latest > last_timestamp):
                     last_timestamp = new_latest
                 log.debug(f"Poll state: last_timestamp={last_timestamp}, replied_timestamps={replied_timestamps}")
-                log.debug(f"Found {len(mentions)} new message(s)")
+                log.debug(f"Found {len(mentions)} new message(s), {len(reel_triggers)} new reel(s)")
 
                 if mentions:
                     # Cooldown check — reply to most recent mention only
@@ -578,6 +724,39 @@ def main():
                             replied_timestamps.add(trigger.timestamp)
                         else:
                             log.warning("LLM returned empty response, skipping reply")
+
+                # Reel reactions (independent of text replies)
+                if REACT_TO_REELS and gemini_client and reel_triggers:
+                    reel_msg = reel_triggers[-1]  # most recent reel
+                    reel_user = get_username(ig_client, reel_msg.user_id, username_cache)
+                    log.info(f"New reel from @{reel_user}")
+
+                    _, media_pk = extract_reel_media(reel_msg)
+                    if media_pk is None:
+                        log.warning(f"Could not extract media_pk from reel — skipping")
+                        replied_timestamps.add(reel_msg.timestamp)
+                    else:
+                        context = format_context(messages, ig_client, username_cache)
+                        reel_reply = process_reel(
+                            ig_client, gemini_client, reel_msg, media_pk,
+                            context, system_prompt, username_cache
+                        )
+
+                        if reel_reply:
+                            delay = random.uniform(REPLY_DELAY_MIN, REPLY_DELAY_MAX)
+                            log.info(f"Waiting {delay:.1f}s before reel reply...")
+                            time.sleep(delay)
+                            ig_client.direct_send(
+                                reel_reply,
+                                thread_ids=[thread_id],
+                                reply_to_message=reel_msg,
+                            )
+                            log.info(f"Replied to reel: {reel_reply[:80]}")
+                        else:
+                            log.warning("No reaction generated for reel, skipping")
+
+                        # Always mark as processed to avoid re-processing
+                        replied_timestamps.add(reel_msg.timestamp)
 
             # Wait before next poll
             poll_interval = random.uniform(POLL_MIN, POLL_MAX)
