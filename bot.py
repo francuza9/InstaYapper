@@ -204,7 +204,7 @@ def send_reply(ig_client, thread_id, text):
 
 
 
-def _get_web_session(username, password):
+def _get_web_session():
     global _web_session
     if _web_session is not None:
         return _web_session
@@ -215,44 +215,39 @@ def _get_web_session(username, password):
                       "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
     })
 
-    # GET homepage to pick up initial csrftoken cookie
-    session.get("https://www.instagram.com/")
-    csrf = session.cookies.get("csrftoken", "")
+    cookies = {
+        "csrftoken": os.getenv("WEB_CSRFTOKEN"),
+        "datr": os.getenv("WEB_DATR"),
+        "ds_user_id": os.getenv("WEB_DS_USER_ID"),
+        "ig_did": os.getenv("WEB_IG_DID"),
+        "mid": os.getenv("WEB_MID"),
+        "rur": os.getenv("WEB_RUR"),
+        "sessionid": os.getenv("WEB_SESSIONID"),
+    }
 
-    # Web login
-    resp = session.post(
-        "https://www.instagram.com/accounts/login/ajax/",
-        data={
-            "username": username,
-            "enc_password": f"#PWD_INSTAGRAM_BROWSER:0:{int(time.time())}:{password}",
-            "queryParams": "{}",
-            "optIntoOneTap": "false",
-        },
-        headers={
-            "X-CSRFToken": csrf,
-            "X-IG-App-ID": "936619743392459",
-            "X-Requested-With": "XMLHttpRequest",
-            "Referer": "https://www.instagram.com/",
-        },
-    )
-    resp.raise_for_status()
-    data = resp.json()
+    missing = [k for k, v in cookies.items() if not v]
+    if missing:
+        raise RuntimeError(f"Missing web cookies in .env: {', '.join(missing)}")
 
-    if not data.get("authenticated"):
-        raise RuntimeError(f"Web login failed: {data}")
+    cookie_str = "; ".join(f"{k}={v}" for k, v in cookies.items())
+    session.headers["Cookie"] = cookie_str
 
-    log.info("Web login successful")
+    log.info("Web session created from browser cookies")
     _web_session = session
     return _web_session
 
 
-def fetch_web_tokens(username, password):
+def fetch_web_tokens():
     global _web_tokens
     if _web_tokens:
         return _web_tokens
 
-    session = _get_web_session(username, password)
-    resp = session.get("https://www.instagram.com/direct/")
+    session = _get_web_session()
+    resp = session.get("https://www.instagram.com/direct/", headers={
+        "Sec-Fetch-Dest": "empty",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "same-origin",
+    })
     resp.raise_for_status()
     html = resp.text
 
@@ -287,9 +282,9 @@ def fetch_web_tokens(username, password):
     return _web_tokens
 
 
-def upload_web_audio(username, password, audio_path):
-    session = _get_web_session(username, password)
-    tokens = fetch_web_tokens(username, password)
+def upload_web_audio(audio_path):
+    session = _get_web_session()
+    tokens = fetch_web_tokens()
 
     with open(audio_path, "rb") as f:
         audio_data = f.read()
@@ -317,20 +312,39 @@ def upload_web_audio(username, password, audio_path):
         params=params,
         headers={
             "X-FB-LSD": tokens["lsd"],
-            "X-CSRFToken": session.cookies.get("csrftoken", ""),
+            "X-CSRFToken": os.getenv("WEB_CSRFTOKEN", ""),
             "X-ASBD-ID": "359341",
             "X-IG-App-ID": "936619743392459",
             "Origin": "https://www.instagram.com",
             "Referer": "https://www.instagram.com/direct/",
+            "Sec-Fetch-Dest": "empty",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Site": "same-origin",
         },
         files={"farr": ("reply.m4a", audio_data, "audio/mp4")},
     )
 
     log.info(f"Upload response status: {resp.status_code}")
     log.info(f"Upload response body: {resp.text[:2000]}")
+
+    # Detect expired or invalid web cookies
+    body = resp.text
+    if (
+        resp.status_code in (401, 403)
+        or "not logged in" in body.lower()
+        or body.strip().startswith("<!") or body.strip().startswith("<html")
+    ):
+        global VOICE_CHANCE, _web_session, _web_tokens
+        _web_session = None
+        _web_tokens = {}
+        VOICE_CHANCE = 0
+        raise RuntimeError(
+            "Web cookies expired — voice messages disabled. "
+            "Update WEB_* cookies in .env and restart the bot."
+        )
+
     resp.raise_for_status()
 
-    body = resp.text
     if body.startswith("for (;;);"):
         body = body[len("for (;;);"):]
 
@@ -350,9 +364,9 @@ def upload_web_audio(username, password, audio_path):
     return audio_id
 
 
-def send_web_voice(username, password, thread_id, audio_id):
-    session = _get_web_session(username, password)
-    tokens = fetch_web_tokens(username, password)
+def send_web_voice(thread_id, audio_id):
+    session = _get_web_session()
+    tokens = fetch_web_tokens()
 
     variables = json.dumps({
         "attachment_fbid": str(audio_id),
@@ -365,9 +379,12 @@ def send_web_voice(username, password, thread_id, audio_id):
         "https://www.instagram.com/api/graphql",
         headers={
             "X-FB-Friendly-Name": "IGDirectMediaSendMutation",
-            "X-CSRFToken": session.cookies.get("csrftoken", ""),
+            "X-CSRFToken": os.getenv("WEB_CSRFTOKEN", ""),
             "X-IG-App-ID": "936619743392459",
             "X-FB-LSD": tokens["lsd"],
+            "Sec-Fetch-Dest": "empty",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Site": "same-origin",
         },
         data={
             "fb_api_req_friendly_name": "IGDirectMediaSendMutation",
@@ -383,15 +400,21 @@ def send_web_voice(username, password, thread_id, audio_id):
         },
     )
 
-    if resp.status_code in (401, 403):
-        _web_tokens.clear()
-        raise RuntimeError(f"GraphQL auth error: {resp.status_code}")
+    if resp.status_code in (401, 403) or "not logged in" in resp.text.lower():
+        global VOICE_CHANCE, _web_session, _web_tokens
+        _web_session = None
+        _web_tokens = {}
+        VOICE_CHANCE = 0
+        raise RuntimeError(
+            "Web cookies expired — voice messages disabled. "
+            "Update WEB_* cookies in .env and restart the bot."
+        )
 
     resp.raise_for_status()
     log.info("Voice message sent via GraphQL")
 
 
-def send_voice_reply(username, password, thread_id, text):
+def send_voice_reply(thread_id, text):
     mp3_path = "/tmp/reply.mp3"
     m4a_path = "/tmp/reply.m4a"
     try:
@@ -409,8 +432,8 @@ def send_voice_reply(username, password, thread_id, text):
         if result.returncode != 0:
             raise RuntimeError(f"ffmpeg failed: {result.stderr.decode()}")
 
-        audio_id = upload_web_audio(username, password, m4a_path)
-        send_web_voice(username, password, thread_id, audio_id)
+        audio_id = upload_web_audio(m4a_path)
+        send_web_voice(thread_id, audio_id)
         log.info(f"Sent voice reply: {text[:80]}{'...' if len(text) > 80 else ''}")
     finally:
         for path in (mp3_path, m4a_path):
@@ -476,6 +499,16 @@ def main():
     except Exception as e:
         log.warning(f"Failed to pre-cache usernames from thread info: {e}")
 
+    # Pre-cache web session & tokens for voice messages
+    global VOICE_CHANCE
+    try:
+        _get_web_session()
+        fetch_web_tokens()
+        log.info("Web session and tokens cached — voice messages enabled.")
+    except Exception as e:
+        log.warning(f"Web session setup failed: {e} — voice messages disabled.")
+        VOICE_CHANCE = 0
+
     bot_user_id = int(ig_client.user_id)
     log.info(f"Bot user_id: {bot_user_id} (type: {type(bot_user_id).__name__})")
 
@@ -527,7 +560,7 @@ def main():
                         if reply:
                             if random.random() < VOICE_CHANCE:
                                 try:
-                                    send_voice_reply(username, password, thread_id, reply)
+                                    send_voice_reply(thread_id, reply)
                                 except Exception as e:
                                     log.warning(f"Voice reply failed, falling back to text: {e}")
                                     send_reply(ig_client, thread_id, reply)

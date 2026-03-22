@@ -55,6 +55,32 @@ A Python bot that sits in an Instagram group chat and responds when @mentioned. 
 
 Edit `system_prompt.txt` to change how the bot behaves. The `{BOT_DISPLAY_NAME}` placeholder gets replaced with the bot's name at runtime. No need to restart — the prompt is loaded on startup.
 
+## Voice Messages Setup
+
+Voice replies require web cookies from an authenticated Instagram browser session. These cookies let the bot upload audio without programmatic login.
+
+1. **Open Instagram in your browser** and log into the bot account.
+
+2. **Open Developer Tools** — press `F12`.
+
+3. **Find the cookies:**
+   - **Chrome:** go to the **Application** tab → **Cookies** → `https://www.instagram.com`
+   - **Firefox:** go to the **Storage** tab → **Cookies** → `https://www.instagram.com`
+
+4. **Copy these cookie values** into your `.env` file:
+
+   | Cookie name | `.env` variable |
+   |------------|-----------------|
+   | `csrftoken` | `WEB_CSRFTOKEN` |
+   | `datr` | `WEB_DATR` |
+   | `ds_user_id` | `WEB_DS_USER_ID` |
+   | `ig_did` | `WEB_IG_DID` |
+   | `mid` | `WEB_MID` |
+   | `rur` | `WEB_RUR` |
+   | `sessionid` | `WEB_SESSIONID` |
+
+5. **Note:** These cookies expire periodically. If voice messages stop working, repeat the steps above to refresh them.
+
 ## How It Works
 
 - Polls the group chat every 30-45 seconds (randomized)

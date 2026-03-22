@@ -5,7 +5,6 @@ import json
 import os
 import re
 import subprocess
-import time
 
 import requests
 from dotenv import load_dotenv
@@ -13,8 +12,6 @@ from gtts import gTTS
 
 load_dotenv()
 
-USERNAME = os.getenv("INSTAGRAM_USERNAME")
-PASSWORD = os.getenv("INSTAGRAM_PASSWORD")
 THREAD_ID = os.getenv("GROUP_THREAD_ID")
 
 UA = (
@@ -40,74 +37,43 @@ if result.returncode != 0:
     exit(1)
 print("Created /tmp/test_voice.m4a")
 
-# --- Step 1: Web login ---
-step("Web login")
+# --- Step 1: Load browser cookies from .env ---
+step("Loading browser cookies from .env")
 session = requests.Session()
 session.headers.update({"User-Agent": UA})
 
-print("GET https://www.instagram.com/ ...")
-resp = session.get("https://www.instagram.com/")
-print(f"  Status: {resp.status_code}")
-print(f"  Cookies after homepage: {dict(session.cookies)}")
+cookies = {
+    "csrftoken": os.getenv("WEB_CSRFTOKEN"),
+    "datr": os.getenv("WEB_DATR"),
+    "ds_user_id": os.getenv("WEB_DS_USER_ID"),
+    "ig_did": os.getenv("WEB_IG_DID"),
+    "mid": os.getenv("WEB_MID"),
+    "rur": os.getenv("WEB_RUR"),
+    "sessionid": os.getenv("WEB_SESSIONID"),
+}
 
-# Check for datr cookie — if missing, try /web/__mid/ endpoint
-if "datr" not in session.cookies:
-    print("\n  datr cookie missing, trying /web/__mid/ ...")
-    resp2 = session.get("https://www.instagram.com/web/__mid/")
-    print(f"  Status: {resp2.status_code}")
-    print(f"  Cookies after __mid: {dict(session.cookies)}")
-    if "datr" in session.cookies:
-        print(f"  datr acquired: {session.cookies['datr'][:20]}...")
-    else:
-        print("  WARNING: datr still missing!")
-else:
-    print(f"  datr already present: {session.cookies['datr'][:20]}...")
-
-csrf = session.cookies.get("csrftoken", "")
-print(f"\n  CSRF token: {csrf[:20]}...")
-
-print(f"\nPOST /accounts/login/ajax/ as {USERNAME}...")
-resp = session.post(
-    "https://www.instagram.com/accounts/login/ajax/",
-    data={
-        "username": USERNAME,
-        "enc_password": f"#PWD_INSTAGRAM_BROWSER:0:{int(time.time())}:{PASSWORD}",
-        "queryParams": "{}",
-        "optIntoOneTap": "false",
-    },
-    headers={
-        "X-CSRFToken": csrf,
-        "X-IG-App-ID": "936619743392459",
-        "X-Requested-With": "XMLHttpRequest",
-        "Referer": "https://www.instagram.com/",
-    },
-)
-print(f"  Status: {resp.status_code}")
-print(f"  Response: {resp.text[:500]}")
-print(f"  Cookies after login: {dict(session.cookies)}")
-
-login_data = resp.json()
-if not login_data.get("authenticated"):
-    print("LOGIN FAILED!")
+missing = [k for k, v in cookies.items() if not v]
+if missing:
+    print(f"  Missing cookies: {', '.join(missing)}")
+    print("  Fill in the WEB_* variables in your .env file.")
     exit(1)
-print("Login OK!")
 
-# Log cookie inventory
-print(f"\n  Cookie inventory after login:")
-for name in sorted(session.cookies.keys()):
-    val = session.cookies[name]
-    print(f"    {name}: {val[:30]}{'...' if len(val) > 30 else ''}")
+cookie_str = "; ".join(f"{k}={v}" for k, v in cookies.items())
+session.headers["Cookie"] = cookie_str
+
+print(f"  Cookie header: {cookie_str[:120]}...")
 
 # --- Step 2: Fetch web tokens ---
 step("Fetching web tokens from /direct/")
-resp = session.get("https://www.instagram.com/direct/")
+resp = session.get("https://www.instagram.com/direct/", headers={
+    "Sec-Fetch-Dest": "empty",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Site": "same-origin",
+})
 print(f"  Status: {resp.status_code}")
 print(f"  HTML length: {len(resp.text)}")
 
-print(f"\n  Cookie inventory after /direct/:")
-for name in sorted(session.cookies.keys()):
-    val = session.cookies[name]
-    print(f"    {name}: {val[:30]}{'...' if len(val) > 30 else ''}")
+print(f"\n  Cookie header being sent: {session.headers.get('Cookie', '')[:120]}...")
 
 html = resp.text
 fb_dtsg_match = re.search(r'"DTSGInitData".*?"token"\s*:\s*"([^"]+)"', html, re.DOTALL)
@@ -148,21 +114,29 @@ params = {
 
 headers = {
     "X-FB-LSD": tokens["lsd"],
-    "X-CSRFToken": session.cookies.get("csrftoken", ""),
+    "X-CSRFToken": cookies["csrftoken"],
     "X-ASBD-ID": "359341",
     "X-IG-App-ID": "936619743392459",
     "Origin": "https://www.instagram.com",
     "Referer": "https://www.instagram.com/direct/",
+    "Sec-Fetch-Dest": "empty",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Site": "same-origin",
 }
 
 print(f"\n  Request params: {json.dumps(params, indent=4)}")
 print(f"\n  Request headers: {json.dumps(headers, indent=4)}")
-print(f"\n  Session cookies: {dict(session.cookies)}")
+print(f"\n  Raw cookies: {cookies}")
 
-resp = session.post(
+upload_headers = {
+    "User-Agent": UA,
+    "Cookie": cookie_str,
+    **headers,
+}
+resp = requests.post(
     "https://www.instagram.com/ajax/mercury/upload.php",
     params=params,
-    headers=headers,
+    headers=upload_headers,
     files={"farr": ("reply.m4a", audio_data, "audio/mp4")},
 )
 
@@ -203,9 +177,12 @@ variables = json.dumps({
 
 graphql_headers = {
     "X-FB-Friendly-Name": "IGDirectMediaSendMutation",
-    "X-CSRFToken": session.cookies.get("csrftoken", ""),
+    "X-CSRFToken": cookies["csrftoken"],
     "X-IG-App-ID": "936619743392459",
     "X-FB-LSD": tokens["lsd"],
+    "Sec-Fetch-Dest": "empty",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Site": "same-origin",
 }
 
 graphql_data = {
